@@ -1336,7 +1336,7 @@ func (s *Service) classifyPipelineOwned(ctx context.Context, state *State, run *
 	state.Pipeline.Phase = "pre_push"
 	state.Relation = relationBetween(ctx, s.workDir(), state.Local.Head, run.HeadSHA)
 	if terminalRunStatus(run.Status) {
-		if !s.terminalHeadReachable(ctx, *state, run) {
+		if run.TerminalHeadVerifiedAt != nil && !s.terminalHeadReachable(ctx, *state, run) {
 			state.Safety = "blocked_pipeline_owned_unreachable"
 			state.Error = "the terminal run recorded a preserved pipeline head that is not reachable from the local repository or gate; custody recovery is unavailable and no local follow-up commit is safe"
 			state.NextAction = nil
