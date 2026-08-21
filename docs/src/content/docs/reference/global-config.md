@@ -289,6 +289,8 @@ For older active runs that do not yet have activity rows, AXI falls back to the 
 Maximum wall-clock time for the Review step's agent turns in one review round.
 The budget starts at that round's first agent turn and covers its optional review-fix turn plus the rereview turn together; every later auto-fix round starts a fresh budget.
 When the deadline expires, the review agent is cancelled and the run fails with a diagnostic naming the timeout instead of remaining active indefinitely.
+The budget bounds agent execution only.
+Committing a fix the agent already produced is never interrupted by it, so an expired budget can only discard uncommitted agent work.
 
 |         |                        |
 | ------- | ---------------------- |

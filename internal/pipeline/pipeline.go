@@ -87,11 +87,15 @@ type StepContext struct {
 // turns use this; every other agent invocation - including every review turn,
 // which must stay independent of the session that prescribed the fixes under
 // review - goes through sctx.Agent.Run directly and stays session-isolated.
-func (sctx *StepContext) RunAgentSession(role SessionRole, opts agent.RunOpts) (*agent.Result, error) {
+//
+// ctx bounds the agent turn alone and is explicit rather than taken from
+// sctx.Ctx, so a caller can time-box the model call without also time-boxing
+// the non-atomic commit tail that follows it.
+func (sctx *StepContext) RunAgentSession(ctx context.Context, role SessionRole, opts agent.RunOpts) (*agent.Result, error) {
 	if sctx.Sessions == nil {
-		return sctx.Agent.Run(sctx.Ctx, opts)
+		return sctx.Agent.Run(ctx, opts)
 	}
-	return sctx.Sessions.Run(sctx.Ctx, sctx.Agent, role, opts, sctx.Log)
+	return sctx.Sessions.Run(ctx, sctx.Agent, role, opts, sctx.Log)
 }
 
 // StepOutcome is the result of executing a pipeline step.

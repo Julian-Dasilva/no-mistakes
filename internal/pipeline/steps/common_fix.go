@@ -34,6 +34,11 @@ type fixExecutionOptions struct {
 	// Workload records the bounded size of the change under fix for local
 	// telemetry. Optional; nil leaves the invocation's workload unknown.
 	Workload *agent.InvocationWorkload
+	// AgentCtx, when set, bounds the fixer agent turn alone. The commit tail
+	// (commitAgentFixes) always runs on sctx.Ctx, so a caller-imposed agent
+	// deadline can never fire between the fix commit and the update-ref that
+	// makes it reachable. Nil runs the agent on sctx.Ctx.
+	AgentCtx context.Context
 }
 
 type commitSummary struct {
@@ -271,12 +276,16 @@ func executeFixMode(sctx *pipeline.StepContext, stepName types.StepName, opts fi
 		Purpose:    purpose,
 		Workload:   opts.Workload,
 	}
+	agentCtx := opts.AgentCtx
+	if agentCtx == nil {
+		agentCtx = sctx.Ctx
+	}
 	var result *agent.Result
 	var err error
 	if opts.SessionRole != "" {
-		result, err = sctx.RunAgentSession(opts.SessionRole, runOpts)
+		result, err = sctx.RunAgentSession(agentCtx, opts.SessionRole, runOpts)
 	} else {
-		result, err = sctx.Agent.Run(sctx.Ctx, runOpts)
+		result, err = sctx.Agent.Run(agentCtx, runOpts)
 	}
 	if err != nil {
 		return "", fmt.Errorf("%s: %w", opts.ErrorPrefix, err)

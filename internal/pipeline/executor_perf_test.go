@@ -63,7 +63,7 @@ func TestExecutor_RecordsAgentInvocationsLocally(t *testing.T) {
 	step := &adaptiveCallStep{
 		name: types.StepReview,
 		fn: func(sctx *StepContext) (*StepOutcome, error) {
-			if _, err := sctx.RunAgentSession(SessionRoleReviewer, agent.RunOpts{Prompt: "review", Purpose: "review"}); err != nil {
+			if _, err := sctx.RunAgentSession(sctx.Ctx, SessionRoleReviewer, agent.RunOpts{Prompt: "review", Purpose: "review"}); err != nil {
 				return nil, err
 			}
 			if _, err := sctx.Agent.Run(sctx.Ctx, agent.RunOpts{Prompt: "evidence"}); err != nil {

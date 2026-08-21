@@ -166,7 +166,7 @@ func TestExecutor_ResumeRestoresParkedGateAndReviewSessions(t *testing.T) {
 			if !sctx.Fixing {
 				return nil, fmt.Errorf("recovered gate must not rerun its completed review pass")
 			}
-			if _, err := sctx.RunAgentSession(SessionRoleFixer, agent.RunOpts{Prompt: "fix"}); err != nil {
+			if _, err := sctx.RunAgentSession(sctx.Ctx, SessionRoleFixer, agent.RunOpts{Prompt: "fix"}); err != nil {
 				return nil, err
 			}
 			// The rereview is deliberately session-free (see ReviewStep): it

@@ -23,26 +23,36 @@ func (s *ReviewStep) Name() types.StepName { return types.StepReview }
 
 func (s *ReviewStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
 	ctx := sctx.Ctx
-	var cancel context.CancelFunc
+	// One review round's agent turns share one wall-clock budget: the optional
+	// fix turn and the rereview turn that certifies it. Every later auto-fix
+	// round re-enters Execute and derives a fresh budget from the step context.
+	//
+	// The budget bounds ONLY agent execution. It is deliberately never assigned
+	// to sctx.Ctx, because the fix turn's tail - stage, commit, resolve head,
+	// update-ref, persist (commitAgentFixes) - is not atomic. A fixer that
+	// returns just before its deadline would create the commit and then have
+	// the deadline fire before update-ref, leaving the pipeline-authored fix
+	// reachable only from the disposable worktree's detached HEAD; run cleanup
+	// then deletes the only reference to it. The whole job of this tool is to
+	// not lose people's code, so the commit tail always runs on the unbounded
+	// step context and a timeout can only ever discard work the agent had not
+	// yet committed.
+	var agentCtx context.Context
+	var cancelAgentBudget context.CancelFunc
 	var timeout time.Duration
-	var restoreContext func()
-	startReviewTimeout := func() {
-		if cancel != nil {
-			return
-		}
-		parentCtx := sctx.Ctx
-		ctx, cancel, timeout = reviewAgentContext(sctx)
-		sctx.Ctx = ctx
-		restoreContext = func() {
-			cancel()
-			sctx.Ctx = parentCtx
-		}
-	}
 	defer func() {
-		if restoreContext != nil {
-			restoreContext()
+		if cancelAgentBudget != nil {
+			cancelAgentBudget()
 		}
 	}()
+	// agentBudget returns this round's shared agent deadline, starting it on
+	// the first agent turn so time spent preparing the prompt is not charged.
+	agentBudget := func() context.Context {
+		if agentCtx == nil {
+			agentCtx, cancelAgentBudget, timeout = reviewAgentContext(sctx)
+		}
+		return agentCtx
+	}
 	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
 	branch := sctx.Run.Branch
 	ignorePatterns := "none"
@@ -83,7 +93,6 @@ func (s *ReviewStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 	// regression tests guard the wording, not the runtime.
 	var fixSummary string
 	if sctx.Fixing && !sctx.SkipFixExecution {
-		startReviewTimeout()
 		previousFindings := sanitizedPreviousFindingsForPrompt(sctx.PreviousFindings)
 		historySection := executionContextPromptSection() + roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx) + testguidance.Rule
 		fixPrompt := fmt.Sprintf(
@@ -133,9 +142,13 @@ Previous review findings to address:
 			SessionRole:             pipeline.SessionRoleFixer,
 			Purpose:                 "review-fix",
 			Workload:                workload,
+			// Bounds the fixer agent turn only; commitAgentFixes stays on the
+			// unbounded step context so an expiring budget cannot strand the
+			// commit it just created.
+			AgentCtx: agentBudget(),
 		})
 		if err != nil {
-			return nil, reviewAgentError(ctx, timeout, "agent fix", err)
+			return nil, reviewAgentError(agentCtx, timeout, "agent fix", err)
 		}
 		fixSummary = summary
 	}
@@ -172,7 +185,6 @@ Previous review findings to address:
 
 	// Ask agent to review
 	sctx.Log("reviewing changes...")
-	startReviewTimeout()
 
 	// The review turn (initial and every post-fix rereview) carries the intent
 	// conformance obligation: when the intent is authoritative acceptance
@@ -275,7 +287,7 @@ Risk assessment (after listing all findings):
 	// cross-round context a rereview legitimately needs travels in the
 	// explicit sanitized round-history section above; only the fixer keeps a
 	// durable session (executeFixMode), because it certifies nothing.
-	result, err := sctx.Agent.Run(ctx, agent.RunOpts{
+	result, err := sctx.Agent.Run(agentBudget(), agent.RunOpts{
 		Prompt:     prompt,
 		CWD:        sctx.WorkDir,
 		Env:        sctx.Env,
@@ -285,7 +297,7 @@ Risk assessment (after listing all findings):
 		Workload:   workload,
 	})
 	if err != nil {
-		return nil, reviewAgentError(ctx, timeout, "agent review", err)
+		return nil, reviewAgentError(agentCtx, timeout, "agent review", err)
 	}
 
 	// Parse structured findings

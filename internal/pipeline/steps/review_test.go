@@ -123,6 +123,64 @@ func TestReviewStep_EachRoundGetsItsOwnAgentBudget(t *testing.T) {
 	}
 }
 
+// TestReviewStep_ExpiredAgentBudgetKeepsTheFixCommitReachable pins the
+// scope of review_agent_timeout: the budget bounds agent turns, never the
+// non-atomic commit tail that follows a fix turn.
+//
+// The regression it reproduces is data loss. A fixer that returns right at its
+// deadline has already edited the worktree; if the expired context also reached
+// commitAgentFixes, the stage/commit/update-ref sequence failed partway and the
+// pipeline-authored fix was left reachable only from the disposable worktree's
+// detached HEAD, which run cleanup then deletes. The fix must be committed and
+// referenced by the branch ref even though the round itself goes on to fail on
+// the expired budget.
+func TestReviewStep_ExpiredAgentBudgetKeepsTheFixCommitReachable(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+
+	calls := 0
+	ag := &mockAgent{
+		name: "deadline-racing-fixer",
+		runFn: func(ctx context.Context, _ agent.RunOpts) (*agent.Result, error) {
+			calls++
+			if calls == 1 {
+				// The fixer edits the worktree, then returns exactly as its
+				// budget expires.
+				if err := os.WriteFile(filepath.Join(dir, "review-fix.txt"), []byte("fixed"), 0o644); err != nil {
+					return nil, err
+				}
+				<-ctx.Done()
+				return &agent.Result{Output: json.RawMessage(`{"summary":"address review findings"}`)}, nil
+			}
+			// The rereview turn shares the same spent budget and fails.
+			return nil, ctx.Err()
+		},
+	}
+
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Config.ReviewAgentTimeout = 50 * time.Millisecond
+	sctx.Fixing = true
+	sctx.PreviousFindings = `{"findings":[{"id":"review-1","severity":"warning","file":"a.txt","description":"needs a fix"}]}`
+
+	step := &ReviewStep{}
+	if _, err := step.Execute(sctx); err == nil {
+		t.Fatal("expected the expired agent budget to fail the review round")
+	}
+
+	if sctx.Run.HeadSHA == headSHA {
+		t.Fatal("recorded head did not advance: the fix commit was never created")
+	}
+	branchHead := strings.TrimSpace(gitCmd(t, dir, "rev-parse", "refs/heads/feature"))
+	if branchHead != sctx.Run.HeadSHA {
+		t.Fatalf("branch ref = %s, want the fix commit %s; the commit is unreachable and run cleanup would delete it",
+			branchHead, sctx.Run.HeadSHA)
+	}
+	if tree := gitCmd(t, dir, "ls-tree", "--name-only", branchHead); !strings.Contains(tree, "review-fix.txt") {
+		t.Fatalf("fix commit %s does not contain the agent's edit; tree = %q", branchHead, tree)
+	}
+}
+
 func TestReviewStep_FixMode(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
